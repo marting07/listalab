@@ -9,8 +9,9 @@ from __future__ import annotations
 import json
 import math
 import re
-from copy import deepcopy
 from typing import Union
+
+from . import recursive as r
 
 
 class Symbol(str):
@@ -39,8 +40,7 @@ def validate(value: Value, *, root_list: bool = True) -> None:
         if depth > MAX_DEPTH:
             raise ValueError(f"El límite es de {MAX_DEPTH} niveles de listas.")
         if isinstance(node, list):
-            for child in node:
-                visit(child, depth + int(isinstance(child, list)))
+            visit_items(node, depth)
         elif isinstance(node, Symbol):
             if not SYMBOL.fullmatch(node) or node in {"nil", "#t", "#f"} or NUMBER.fullmatch(node):
                 raise ValueError("Símbolo no válido.")
@@ -48,6 +48,13 @@ def validate(value: Value, *, root_list: bool = True) -> None:
             raise ValueError("Solo se admiten listas, símbolos, cadenas, números, booleanos y nil.")
         elif isinstance(node, float) and not math.isfinite(node):
             raise ValueError("Los números deben ser finitos.")
+
+    def visit_items(items: list, depth: int) -> None:
+        if r.null(items):
+            return
+        child = r.car(items)
+        visit(child, depth + int(isinstance(child, list)))
+        visit_items(r.cdr(items), depth)
 
     visit(value, 1 if isinstance(value, list) else 0)
     if len(to_lisp(value)) > MAX_SOURCE:
@@ -85,15 +92,7 @@ def parse(source: str, *, root_list: bool = True) -> Value:
             if depth >= MAX_DEPTH:
                 raise ValueError(f"El límite es de {MAX_DEPTH} niveles de listas.")
             pos += 1
-            result = []
-            while True:
-                whitespace()
-                if pos >= len(source):
-                    raise ValueError("Falta un paréntesis de cierre: ).")
-                if source[pos] == ")":
-                    pos += 1
-                    return result
-                result.append(expression(depth + 1))
+            return sequence(depth + 1)
         if char == ")":
             raise ValueError(f"Paréntesis de cierre inesperado en la posición {pos + 1}.")
         if char == '"':
@@ -121,6 +120,17 @@ def parse(source: str, *, root_list: bool = True) -> Value:
             raise ValueError("Símbolo inválido. Usa comillas dobles para cadenas de texto.")
         return Symbol(token)
 
+    def sequence(depth: int) -> list:
+        nonlocal pos
+        whitespace()
+        if pos >= len(source):
+            raise ValueError("Falta un paréntesis de cierre: ).")
+        if source[pos] == ")":
+            pos += 1
+            return []
+        head = expression(depth)
+        return r.cons(head, sequence(depth))
+
     whitespace()
     # Se acepta una comilla inicial como notación de datos, sin evaluar quote.
     if pos < len(source) and source[pos] == "'":
@@ -135,7 +145,7 @@ def parse(source: str, *, root_list: bool = True) -> Value:
 
 def to_lisp(value: Value) -> str:
     if isinstance(value, list):
-        return "(" + " ".join(to_lisp(child) for child in value) + ")"
+        return "(" + _lisp_items(value) + ")"
     if isinstance(value, Symbol):
         return str(value)
     if value is None:
@@ -145,22 +155,20 @@ def to_lisp(value: Value) -> str:
     return json.dumps(value, ensure_ascii=False)
 
 
+def _lisp_items(items: list) -> str:
+    if r.null(items):
+        return ""
+    head = to_lisp(r.car(items))
+    tail = r.cdr(items)
+    return head if r.null(tail) else head + " " + _lisp_items(tail)
+
+
 def at(data: list, path: list[int]) -> Value:
-    value = data
-    for index in path:
-        if not isinstance(value, list) or not 0 <= index < len(value):
-            raise ValueError("La ruta seleccionada ya no existe.")
-        value = value[index]
-    return value
+    return r.at(data, path)
 
 
 def replace(data: list, path: list[int], value: Value) -> list:
-    at(data, path)
-    result = deepcopy(data)
-    if path:
-        at(result, path[:-1])[path[-1]] = deepcopy(value)
-    else:
-        result = deepcopy(value)
+    result = r.replace_path(data, path, value)
     validate(result)
     return result
 
@@ -169,60 +177,58 @@ def append(data: list, path: list[int], value: Value) -> list:
     target = at(data, path)
     if not isinstance(target, list):
         raise ValueError("Selecciona una lista para añadir elementos.")
-    return replace(data, path, target + [deepcopy(value)])
+    return replace(data, path, r.concat(target, r.cons(value, [])))
 
 
 def remove(data: list, path: list[int]) -> list:
-    if not path:
-        raise ValueError("La raíz no se elimina. Puedes sustituirla por ().")
-    at(data, path)
-    parent = at(data, path[:-1])
-    return replace(data, path[:-1], parent[:path[-1]] + parent[path[-1] + 1:])
-
-
-def flatten(value: list) -> list:
-    result = []
-    for child in value:
-        if isinstance(child, list):
-            result.extend(flatten(child))
-        else:
-            result.append(child)
+    result = r.remove_path(data, path)
+    validate(result)
     return result
 
 
+def flatten(value: list) -> list:
+    return r.flatten(value)
+
+
 def operation(name: str, target: Value, argument: Value = None) -> Value:
+    if name == "atom":
+        return r.atom(target)
+    if name == "null":
+        return r.null(target)
+    if name == "eq":
+        return r.eq(target, argument)
     if not isinstance(target, list):
         raise ValueError("Esta operación necesita una lista seleccionada.")
     if name == "car":
-        result = target[0] if target else []
+        result = r.car(target)
     elif name == "cdr":
-        result = target[1:]
+        result = r.cdr(target)
     elif name == "cons":
-        result = [argument] + target
+        result = r.cons(argument, target)
     elif name == "reverse":
-        result = target[::-1]
+        result = r.reverse(target)
     elif name == "flatten":
         result = flatten(target)
+    elif name == "length":
+        result = r.length(target)
     else:
         raise ValueError("Operación desconocida.")
-    return deepcopy(result)
+    return r.copy_value(result)
 
 
 def stats(value: Value) -> list[int]:
     """[cantidad de listas, cantidad de átomos, niveles de listas]."""
-    if not isinstance(value, list):
-        return [0, 1, 0]
-    children = [stats(child) for child in value]
-    return [1 + sum(s[0] for s in children), sum(s[1] for s in children),
-            1 + max((s[2] for s in children), default=0)]
+    return r.stats(value)
 
 
-def generate(levels: int) -> list:
-    if not 1 <= levels <= 6:
-        raise ValueError("El generador admite entre 1 y 6 niveles.")
-    result = [1, 2, 3]
-    for level in range(2, levels + 1):
-        result = [Symbol(f"nivel-{levels - level + 1}"), result, [level, level * 10]]
+def generate(levels: int, mode: str = "lineal") -> list:
+    if mode == "lineal":
+        result = r.crear_lista_lineal(levels)
+    elif mode == "ramificada":
+        result = r.crear_lista_ramificada(levels)
+    else:
+        raise ValueError("Elige un generador lineal o ramificado.")
+    validate(result)
     return result
 
 
@@ -242,27 +248,28 @@ class Document:
 
     def __init__(self, data: list):
         validate(data)
-        self.data = deepcopy(data)
+        self.data = r.copy_value(data)
         self.undo_stack: list[list] = []
         self.redo_stack: list[list] = []
 
     def commit(self, data: list) -> None:
         validate(data)
-        self.undo_stack.append(deepcopy(self.data))
-        self.undo_stack = self.undo_stack[-50:]
-        self.redo_stack.clear()
-        self.data = deepcopy(data)
+        self.undo_stack = r.cons(self.data, r.take(self.undo_stack, 49))
+        self.redo_stack = []
+        self.data = r.copy_value(data)
 
     def undo(self) -> bool:
         if not self.undo_stack:
             return False
-        self.redo_stack.append(self.data)
-        self.data = self.undo_stack.pop()
+        self.redo_stack = r.cons(self.data, self.redo_stack)
+        self.data = r.car(self.undo_stack)
+        self.undo_stack = r.cdr(self.undo_stack)
         return True
 
     def redo(self) -> bool:
         if not self.redo_stack:
             return False
-        self.undo_stack.append(self.data)
-        self.data = self.redo_stack.pop()
+        self.undo_stack = r.cons(self.data, self.undo_stack)
+        self.data = r.car(self.redo_stack)
+        self.redo_stack = r.cdr(self.redo_stack)
         return True

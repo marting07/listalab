@@ -117,7 +117,40 @@ def test_all_examples_and_levels_render(window, app):
         item = window.tree_items[-1]
         window.tree.setCurrentItem(item)
         assert window.path == item.data(0, Qt.ItemDataRole.UserRole)
-    for level in range(1, 7):
-        window.levels.setValue(level)
-        window.generate()
-        assert m.stats(window.doc.data)[2] == level
+    for mode in ("lineal", "ramificada"):
+        window.generator_mode.setCurrentIndex(window.generator_mode.findData(mode))
+        for level in range(1, 7):
+            window.levels.setValue(level)
+            click(window, "Crear")
+            assert window.doc.data == m.generate(level, mode)
+            assert m.stats(window.doc.data)[2] == level
+
+
+def test_atomic_operations_on_selected_nodes(window):
+    window.source.setPlainText('(7 () nil "7")')
+    window.apply_source()
+    window.select([0])
+    for code, expected in [("atom", "#t"), ("null", "#f"), ("eq", "#t")]:
+        window.op_combo.setCurrentIndex(window.op_combo.findData(code))
+        window.argument.setText("7")
+        assert window.preview_button.isEnabled()
+        click(window, "Calcular resultado")
+        assert window.result.toPlainText() == expected
+    window.argument.setText('"7"')
+    window.preview()
+    assert window.result.toPlainText() == "#f"
+    window.select([1])
+    window.op_combo.setCurrentIndex(window.op_combo.findData("null"))
+    window.preview()
+    assert window.result.toPlainText() == "#t"
+    window.select([2])
+    window.preview()
+    assert window.result.toPlainText() == "#t"
+    window.select([])
+    window.op_combo.setCurrentIndex(window.op_combo.findData("length"))
+    window.preview()
+    assert window.result.toPlainText() == "4"
+    assert not window.apply_result_button.isEnabled()
+    window.select([0])
+    assert not window.preview_button.isEnabled()
+    assert "Caso base" in window.recursion_view.toPlainText()
