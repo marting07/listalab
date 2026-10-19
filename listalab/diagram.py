@@ -108,7 +108,7 @@ class Diagram(QGraphicsView):
 
     def zoom(self, factor):
         scale = self.transform().m11() * factor
-        if 0.03 <= scale <= 3:
+        if 0.003 <= scale <= 3:
             self.scale(factor, factor)
 
     def wheelEvent(self, event):

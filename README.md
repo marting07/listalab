@@ -133,7 +133,7 @@ python -m pip install -e ".[dev]"
 python -m pytest -q
 ```
 
-Las pruebas de interfaz usan widgets y eventos Qt reales con `QT_QPA_PLATFORM=offscreen`, sin necesitar una pantalla. Verifican selección por clic en el diagrama, edición, operaciones, historial, lectura/escritura, ejemplos y entradas inválidas. GitHub Actions ejecuta las pruebas en Linux y Windows con Python 3.10 y 3.12.
+Las pruebas de interfaz usan widgets y eventos Qt reales con `QT_QPA_PLATFORM=offscreen`, sin necesitar una pantalla. Verifican selección por clic en el diagrama, edición, operaciones, historial, lectura/escritura, ejemplos y entradas inválidas. El flujo de GitHub Actions está configurado para ejecutarlas en Linux y Windows con Python 3.10 y 3.12.
 
 En un Linux mínimo pueden hacer falta las bibliotecas del sistema de Qt. En Ubuntu/Debian: `sudo apt-get install libegl1 libopengl0 libxcb-cursor0`. El modo `offscreen` sirve para pruebas; para usar la app necesitas una sesión gráfica.
 
