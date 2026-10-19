@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "listalab"
+version = "1.0.0"
+description = "Laboratorio visual de listas anidadas inspirado en Lisp, con Python y PySide6"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [{name = "Martín Ruiz"}]
+dependencies = ["PySide6>=6.8,<7"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<10"]
+
+[project.scripts]
+listalab = "listalab.app:main"
+
+[tool.setuptools.packages.find]
+include = ["listalab*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
