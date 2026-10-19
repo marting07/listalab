@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import sys
-from copy import deepcopy
 from pathlib import Path
 from pprint import pformat
 
@@ -17,8 +16,60 @@ from PySide6.QtWidgets import (
 )
 
 from . import model as m
+from . import recursive as r
 from .diagram import Diagram, COLORS
 from .style import STYLE
+
+
+RECURSION_GUIDE = """DOS FUNCIONES RECURSIVAS PARA CONSTRUIR LISTAS
+
+1. crear_lista_lineal(niveles, valor=1)
+   Caso base: niveles == 1 → cons(valor, []).
+   Paso: añade una sublista creada con niveles - 1.
+
+   crear_lista_lineal(3) → (1 (2 (3)))
+
+   return cons(valor,
+       cons(crear_lista_lineal(niveles - 1, valor + 1), []))
+
+2. crear_lista_ramificada(niveles, valor=1)
+   Caso base: niveles == 1 → cons(valor, []).
+   Paso: crea dos sublistas, ambas con niveles - 1.
+
+   crear_lista_ramificada(3) → (1 (2 (4) (5)) (3 (6) (7)))
+
+   return cons(valor, cons(
+       crear_lista_ramificada(niveles - 1, valor * 2),
+       cons(crear_lista_ramificada(niveles - 1, valor * 2 + 1), [])))
+
+En ambos casos disminuye niveles hasta llegar a 1.
+El selector de la izquierda permite ejecutar las dos funciones.
+
+PRIMITIVAS PARA PENSAR COMO EN LISP
+
+atom(7)           → #t       atom((7)) → #f
+null(())          → #t       null(nil) → #t
+eq(7, 7)          → #t       eq(7, "7") → #f
+car((a b c))      → a
+cdr((a b c))      → (b c)
+cons(a, (b c))    → (a b c)
+
+Las primitivas forman la base. Las operaciones compuestas recorren
+cabeza y cola con recursión, sin ciclos ni utilidades de listas:
+
+length(lista):
+    si null(lista): devolver 0
+    devolver 1 + length(cdr(lista))
+
+copy_value(valor):
+    si atom(valor): devolver valor
+    si null(valor): devolver []
+    devolver cons(copy_value(car(valor)), copy_value(cdr(valor)))
+
+El núcleo está en listalab/recursive.py: no importa librerías.
+PySide6 dibuja la interfaz; el lector usa utilidades para texto.
+Esta representación usa listas Python, no celdas cons enlazadas.
+"""
 
 
 def label(text, name=None):
@@ -92,6 +143,11 @@ class MainWindow(QMainWindow):
         self.examples.currentRowChanged.connect(self.load_example)
         side.addWidget(self.examples, 1)
         side.addWidget(label("CREA MÁS NIVELES"))
+        self.generator_mode = QComboBox()
+        self.generator_mode.addItem("Recursión lineal", "lineal")
+        self.generator_mode.addItem("Recursión ramificada", "ramificada")
+        self.generator_mode.setAccessibleName("Función recursiva para crear listas")
+        side.addWidget(self.generator_mode)
         generator = QHBoxLayout()
         self.levels = QSpinBox()
         self.levels.setRange(1, 6)
@@ -176,6 +232,11 @@ class MainWindow(QMainWindow):
         self.python_view.setReadOnly(True)
         self.python_view.setAccessibleName("Representación de las listas de Python")
         self.tabs.addTab(self.python_view, "Python")
+        self.recursion_view = QPlainTextEdit()
+        self.recursion_view.setReadOnly(True)
+        self.recursion_view.setAccessibleName("Explicación de los dos generadores recursivos")
+        self.recursion_view.setPlainText(RECURSION_GUIDE)
+        self.tabs.addTab(self.recursion_view, "Recursividad")
         viz_layout.addWidget(self.tabs, 1)
         viz_layout.addWidget(label("Arrastra para desplazarte · Ctrl + rueda para acercar · cada color indica un nivel", "muted"))
         splitter.addWidget(viz)
@@ -216,16 +277,18 @@ class MainWindow(QMainWindow):
         panel.addWidget(edit_card)
 
         op_card, op = card()
-        op.addWidget(label("OPERACIONES SOBRE LISTAS", "section"))
+        op.addWidget(label("PRIMITIVAS Y RECURSIÓN", "section"))
         self.op_combo = QComboBox()
         for title, code in [["car · primer elemento", "car"], ["cdr · resto de la lista", "cdr"],
                             ["cons · insertar al inicio", "cons"], ["reverse · invertir", "reverse"],
-                            ["flatten · aplanar", "flatten"]]:
+                            ["flatten · aplanar", "flatten"], ["atom · ¿es un átomo?", "atom"],
+                            ["null · ¿está vacío?", "null"], ["eq · comparar átomos", "eq"],
+                            ["length · contar recursivamente", "length"]]:
             self.op_combo.addItem(title, code)
         self.op_combo.currentIndexChanged.connect(self._operation_changed)
         op.addWidget(self.op_combo)
         self.argument = QLineEdit("0")
-        self.argument.setAccessibleName("Elemento que cons insertará al inicio")
+        self.argument.setAccessibleName("Argumento para cons o segundo átomo para eq")
         self.argument.textChanged.connect(self._clear_preview)
         op.addWidget(self.argument)
         self.argument.hide()
@@ -297,7 +360,18 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(message)
 
     def _refresh(self):
-        self.source.setPlainText(m.to_lisp(self.doc.data))
+        # Al deshabilitar el botón que tenía foco, Qt podría enfocar el catálogo
+        # vacío y seleccionar su primer ejemplo, reemplazando los datos editados.
+        self.diagram.setFocus(Qt.FocusReason.OtherFocusReason)
+        source = m.to_lisp(self.doc.data)
+        self.source.setPlainText(source)
+        self.examples.blockSignals(True)
+        self.examples.setCurrentRow(-1)
+        for index, example in enumerate(m.EXAMPLES):
+            if m.to_lisp(example[2]) == source:
+                self.examples.setCurrentRow(index)
+                break
+        self.examples.blockSignals(False)
         self.error.setText("Paréntesis = lista · espacios = elementos · comillas dobles = texto")
         self.error.setStyleSheet("")
         for metric, value in zip(self.metrics, m.stats(self.doc.data)):
@@ -318,7 +392,7 @@ class MainWindow(QMainWindow):
 
         def add(value, path, parent):
             title = "raíz" if not path else f"[{path[-1]}]"
-            text = f"Lista de {len(value)} elementos" if isinstance(value, list) else m.to_lisp(value)
+            text = f"Lista de {r.length(value)} elementos" if isinstance(value, list) else m.to_lisp(value)
             item = QTreeWidgetItem([title, text])
             item.setData(0, Qt.ItemDataRole.UserRole, path[:])
             item.setForeground(0, QColor(COLORS[len(path) % len(COLORS)]))
@@ -342,12 +416,12 @@ class MainWindow(QMainWindow):
         self.path = path[:]
         value = m.at(self.doc.data, path)
         self.path_label.setText("data" + "".join(f"[{i}]" for i in path))
-        self.node_info.setText(f"Lista · {len(value)} elementos" if isinstance(value, list) else f"Átomo · {type(value).__name__}")
+        self.node_info.setText(f"Lista · {r.length(value)} elementos" if isinstance(value, list) else f"Átomo · {type(value).__name__}")
         self.value_input.setText(m.to_lisp(value))
         self.value_input.setCursorPosition(0)
         self.add_button.setEnabled(isinstance(value, list))
         self.remove_button.setEnabled(bool(path))
-        self.preview_button.setEnabled(isinstance(value, list))
+        self._update_operation_target()
         self.diagram.select_path(path)
         self.tree.blockSignals(True)
         for item in self.tree_items:
@@ -370,14 +444,16 @@ class MainWindow(QMainWindow):
         def task():
             self._clean()
             self.current_title = m.EXAMPLES[index][0]
-            self._commit(deepcopy(m.EXAMPLES[index][2]), m.EXAMPLES[index][1], [])
+            self._commit(m.EXAMPLES[index][2], m.EXAMPLES[index][1], [])
         self._run(task)
 
     def generate(self):
         def task():
             self._clean()
-            self.current_title = f"Lista generada · {self.levels.value()} niveles"
-            self._commit(m.generate(self.levels.value()), "Nueva lista creada. Explora cada nivel.", [])
+            mode = self.generator_mode.currentData()
+            self.current_title = f"Recursión {mode} · {self.levels.value()} niveles"
+            self._commit(m.generate(self.levels.value(), mode),
+                         f"Lista creada con crear_lista_{mode}: caso base y paso recursivo.", [])
         self._run(task)
 
     def replace_node(self):
@@ -399,7 +475,7 @@ class MainWindow(QMainWindow):
         def task():
             self._clean()
             value = m.at(self.doc.data, self.path)
-            self._commit(m.replace(self.doc.data, self.path, [value]), "Nodo envuelto en una nueva lista.")
+            self._commit(m.replace(self.doc.data, self.path, r.cons(value, [])), "Nodo envuelto en una nueva lista.")
         self._run(task)
 
     def remove_node(self):
@@ -416,23 +492,33 @@ class MainWindow(QMainWindow):
 
     def _operation_changed(self, *_):
         code = self.op_combo.currentData()
-        self.argument.setVisible(code == "cons")
+        self.argument.setVisible(code in ("cons", "eq"))
         hints = {
             "car": "Obtiene el primer elemento. En una lista vacía devuelve ().",
             "cdr": "Obtiene una lista con todos los elementos excepto el primero.",
             "cons": "Inserta el argumento como un solo elemento al principio.",
             "reverse": "Invierte el orden del nivel seleccionado, conservando las sublistas.",
             "flatten": "Recorre todas las sublistas y reúne sus átomos en una lista plana.",
+            "atom": "Devuelve #t si el nodo no es una lista. En este modelo () no es un átomo.",
+            "null": "Devuelve #t para () o nil; #f para los demás valores.",
+            "eq": "Selecciona un átomo y escribe otro como argumento. Compara valor y tipo.",
+            "length": "Caso base: () vale 0. Paso recursivo: 1 + length(cdr(lista)).",
         }
         self.operation_hint.setText(hints[code])
+        self._update_operation_target()
         self._clear_preview()
+
+    def _update_operation_target(self):
+        value = m.at(self.doc.data, self.path)
+        self.preview_button.setEnabled(isinstance(value, list)
+                                       or self.op_combo.currentData() in ("atom", "null", "eq"))
 
     def preview(self):
         def task():
             self._clean()
             code = self.op_combo.currentData()
             target = m.at(self.doc.data, self.path)
-            argument = m.parse(self.argument.text(), root_list=False) if code == "cons" else None
+            argument = m.parse(self.argument.text(), root_list=False) if code in ("cons", "eq") else None
             result = m.operation(code, target, argument)
             m.validate(result, root_list=False)
             self.preview_value = result
@@ -496,11 +582,12 @@ class MainWindow(QMainWindow):
 
     def help(self):
         QMessageBox.information(self, "Guía rápida · ListaLab",
-            "1. Selecciona un ejemplo o genera entre 1 y 6 niveles.\n"
+            "1. Selecciona un ejemplo o un generador recursivo (lineal / ramificado).\n"
             "2. Escribe una lista en el editor y pulsa Visualizar.\n"
             "3. Selecciona un nodo en el árbol o en Listas por niveles.\n"
             "4. Reemplaza, añade, anida o elimina elementos.\n"
-            "5. Calcula car, cdr, cons, reverse o flatten y aplica el resultado.\n\n"
+            "5. Prueba car, cdr, cons, atom, null, eq, length, reverse y flatten.\n"
+            "6. La pestaña Recursividad explica los casos base y los pasos recursivos.\n\n"
             "Sintaxis: (1 (2 3) símbolo \"texto\" #t #f nil).\n"
             "Admite comentarios con ; y una comilla inicial opcional.\n"
             "No ejecuta código Lisp. nil y () se representan por separado para aprender.\n"
